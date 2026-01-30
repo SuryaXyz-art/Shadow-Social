@@ -1,0 +1,6 @@
+{
+    "program": "antigravity_id.aleo",
+    "version": "0.1.0",
+    "description": "A Zero-Knowledge Identity & Credential System on Aleo",
+    "license": "MIT"
+}
