@@ -192,7 +192,18 @@ function App() {
   }
 
   const openWalletModal = () => {
-    setShowWalletModal(true)
+    const available = detectWallets()
+
+    if (available.length === 0) {
+      // No wallet extensions — auto-connect in demo mode
+      handleWalletSelect('demo')
+    } else if (available.length === 1) {
+      // Exactly one wallet — auto-connect to it
+      handleWalletSelect(available[0])
+    } else {
+      // Multiple wallets — let user choose
+      setShowWalletModal(true)
+    }
   }
 
   const createIdentity = async (address: string) => {
