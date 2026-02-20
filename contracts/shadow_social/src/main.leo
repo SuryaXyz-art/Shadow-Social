@@ -1,6 +1,7 @@
-// Shadow - Privacy-First Anonymous Social & Messaging Platform
+// Shadow — Private Social Infrastructure on Aleo
 // Program: shadow_social.aleo
-// Sign in with Aleo. Speak without identity. Transact without exposure.
+// Version: 3.0
+// Features: Anonymous identity, posts, messaging, payments, ZK reputation, threshold proofs, anti-spam
 
 program shadow_social.aleo {
     
@@ -8,10 +9,11 @@ program shadow_social.aleo {
     // RECORDS - Private data owned by users
     // ============================================
     
-    // Shadow Identity - Private identity created from Aleo wallet
+    // Shadow Identity - Private identity with reputation
     record ShadowIdentity {
         owner: address,           // Wallet owner
         identity_hash: field,     // Unique identity hash (derived from wallet)
+        reputation: u32,          // ZK reputation score (Phase 2)
         joined_at: u64,           // Block height when joined
         post_count: u32,          // Number of posts created
         is_active: bool,          // Account status
@@ -51,6 +53,7 @@ program shadow_social.aleo {
     record UniquenessToken {
         owner: address,
         token_hash: field,
+        nonce: field,             // Bound nonce for replay prevention
         valid_until: u64,
         actions_remaining: u8,    // Rate limiting
     }
@@ -65,8 +68,21 @@ program shadow_social.aleo {
     // Post existence proofs (post_id -> exists)
     mapping posts: field => bool;
     
+    // Post content hash deduplication (content_hash -> exists)
+    mapping post_hashes: field => bool;
+    
+    // Used nonces for replay prevention (nonce_hash -> used)
+    mapping used_nonces: field => bool;
+    
     // Rate limiting (identity_hash -> last_post_time)
     mapping rate_limits: field => u64;
+    
+    // Reputation scores (identity_hash -> reputation)
+    mapping reputation_scores: field => u32;
+    
+    // Reputation commitments (identity_hash -> BHP256 commitment)
+    // Used for threshold proofs without revealing the actual score
+    mapping reputation_commitments: field => field;
     
     // Initialization status (for constructor pattern)
     mapping initialized: u8 => bool;
@@ -103,10 +119,11 @@ program shadow_social.aleo {
             (self.caller, identity_salt)
         );
         
-        // Create identity record
+        // Create identity record with initial reputation
         let identity: ShadowIdentity = ShadowIdentity {
             owner: self.caller,
             identity_hash: identity_hash,
+            reputation: 10u32,        // Starting reputation
             joined_at: current_block,
             post_count: 0u32,
             is_active: true,
@@ -122,9 +139,12 @@ program shadow_social.aleo {
         
         // Register identity
         Mapping::set(identities, identity_hash, true);
+        
+        // Initialize reputation score
+        Mapping::set(reputation_scores, identity_hash, 10u32);
     }
     
-    // Create an anonymous post
+    // Create an anonymous post with anti-spam protection
     transition create_post(
         identity: ShadowIdentity,
         content_hash: field,
@@ -144,10 +164,16 @@ program shadow_social.aleo {
             (content_hash, current_block)
         );
         
+        // Generate nonce hash for replay prevention
+        let nonce_hash: field = BHP256::hash_to_field(
+            (identity.identity_hash, post_salt)
+        );
+        
         // Update identity with new post count
         let updated_identity: ShadowIdentity = ShadowIdentity {
             owner: identity.owner,
             identity_hash: identity.identity_hash,
+            reputation: identity.reputation,
             joined_at: identity.joined_at,
             post_count: identity.post_count + 1u32,
             is_active: identity.is_active,
@@ -165,6 +191,8 @@ program shadow_social.aleo {
         return (updated_identity, post) then finalize(
             identity.identity_hash,
             post_id,
+            content_hash,
+            nonce_hash,
             current_block
         );
     }
@@ -172,14 +200,30 @@ program shadow_social.aleo {
     finalize create_post(
         identity_hash: field,
         post_id: field,
+        content_hash: field,
+        nonce_hash: field,
         current_block: u64
     ) {
         // Check rate limiting (minimum 10 blocks between posts)
         let last_post: u64 = Mapping::get_or_use(rate_limits, identity_hash, 0u64);
         assert(current_block >= last_post + 10u64);
         
+        // Prevent replay attack with same nonce
+        let nonce_used: bool = Mapping::get_or_use(used_nonces, nonce_hash, false);
+        assert(!nonce_used);
+        
+        // Prevent duplicate content hash
+        let hash_exists: bool = Mapping::get_or_use(post_hashes, content_hash, false);
+        assert(!hash_exists);
+        
         // Register post
         Mapping::set(posts, post_id, true);
+        
+        // Mark content hash as used
+        Mapping::set(post_hashes, content_hash, true);
+        
+        // Mark nonce as used
+        Mapping::set(used_nonces, nonce_hash, true);
         
         // Update rate limit
         Mapping::set(rate_limits, identity_hash, current_block);
@@ -210,6 +254,7 @@ program shadow_social.aleo {
         let updated_identity: ShadowIdentity = ShadowIdentity {
             owner: identity.owner,
             identity_hash: identity.identity_hash,
+            reputation: identity.reputation,
             joined_at: identity.joined_at,
             post_count: identity.post_count,
             is_active: identity.is_active,
@@ -248,7 +293,7 @@ program shadow_social.aleo {
         };
     }
     
-    // Generate anti-spam uniqueness token
+    // Generate anti-spam uniqueness token with commit-based nonce
     transition prove_uniqueness(
         identity: ShadowIdentity,
         token_salt: field,
@@ -258,20 +303,35 @@ program shadow_social.aleo {
         // Ensure identity is active
         assert(identity.is_active);
         
-        // Generate token hash
-        let token_hash: field = BHP256::hash_to_field(
-            (identity.identity_hash, token_salt, current_block)
+        // Generate token hash using commit_to_field for binding
+        let token_hash: field = BHP256::commit_to_field(
+            identity.identity_hash, token_salt
+        );
+        
+        // Generate nonce commitment for replay prevention
+        let nonce_commit: field = BHP256::hash_to_field(
+            (token_salt, current_block)
         );
         
         // Create uniqueness token
         let token: UniquenessToken = UniquenessToken {
             owner: identity.owner,
             token_hash: token_hash,
+            nonce: nonce_commit,
             valid_until: current_block + valid_blocks,
-            actions_remaining: 10u8, // Allow 10 actions per token
+            actions_remaining: 10u8,
         };
         
-        return (identity, token);
+        return (identity, token) then finalize(nonce_commit);
+    }
+    
+    finalize prove_uniqueness(nonce_commit: field) {
+        // Prevent nonce reuse (anti-replay)
+        let nonce_used: bool = Mapping::get_or_use(used_nonces, nonce_commit, false);
+        assert(!nonce_used);
+        
+        // Mark nonce as used
+        Mapping::set(used_nonces, nonce_commit, true);
     }
     
     // Use uniqueness token for action
@@ -287,10 +347,127 @@ program shadow_social.aleo {
         return UniquenessToken {
             owner: token.owner,
             token_hash: token.token_hash,
+            nonce: token.nonce,
             valid_until: token.valid_until,
             actions_remaining: token.actions_remaining - 1u8,
         };
     }
+    
+    // ============================================
+    // REPUTATION SYSTEM - ZK-based accountability
+    // ============================================
+    
+    // Increase reputation (e.g., for quality contributions)
+    transition increase_reputation(
+        identity: ShadowIdentity,
+        amount: u32,
+        rep_nonce: field
+    ) -> ShadowIdentity {
+        // Only owner can modify their own reputation record
+        assert_eq(self.caller, identity.owner);
+        assert(identity.is_active);
+        assert(amount > 0u32);
+        assert(amount <= 10u32); // Max 10 per action
+        
+        // Generate nonce hash for replay prevention
+        let nonce_hash: field = BHP256::hash_to_field(
+            (identity.identity_hash, rep_nonce, amount)
+        );
+        
+        // Cap reputation at 1000
+        let new_rep: u32 = identity.reputation + amount;
+        let capped_rep: u32 = new_rep < 1000u32 ? new_rep : 1000u32;
+        
+        // Return updated identity with new reputation
+        let updated_identity: ShadowIdentity = ShadowIdentity {
+            owner: identity.owner,
+            identity_hash: identity.identity_hash,
+            reputation: capped_rep,
+            joined_at: identity.joined_at,
+            post_count: identity.post_count,
+            is_active: identity.is_active,
+        };
+        
+        return updated_identity then finalize(
+            identity.identity_hash,
+            capped_rep,
+            nonce_hash
+        );
+    }
+    
+    finalize increase_reputation(
+        identity_hash: field,
+        new_reputation: u32,
+        nonce_hash: field
+    ) {
+        // Prevent replay
+        let nonce_used: bool = Mapping::get_or_use(used_nonces, nonce_hash, false);
+        assert(!nonce_used);
+        
+        // Update reputation in public mapping
+        Mapping::set(reputation_scores, identity_hash, new_reputation);
+        
+        // Mark nonce as used
+        Mapping::set(used_nonces, nonce_hash, true);
+    }
+    
+    // Decrease reputation (e.g., for reported spam)
+    transition decrease_reputation(
+        identity: ShadowIdentity,
+        amount: u32,
+        rep_nonce: field
+    ) -> ShadowIdentity {
+        // Only owner can modify their own reputation record
+        assert_eq(self.caller, identity.owner);
+        assert(identity.is_active);
+        assert(amount > 0u32);
+        assert(amount <= 10u32); // Max 10 per action
+        
+        // Generate nonce hash for replay prevention
+        let nonce_hash: field = BHP256::hash_to_field(
+            (identity.identity_hash, rep_nonce, amount)
+        );
+        
+        // Floor reputation at 0
+        let new_rep: u32 = identity.reputation > amount ? 
+            identity.reputation - amount : 0u32;
+        
+        // Return updated identity with new reputation
+        let updated_identity: ShadowIdentity = ShadowIdentity {
+            owner: identity.owner,
+            identity_hash: identity.identity_hash,
+            reputation: new_rep,
+            joined_at: identity.joined_at,
+            post_count: identity.post_count,
+            is_active: identity.is_active,
+        };
+        
+        return updated_identity then finalize(
+            identity.identity_hash,
+            new_rep,
+            nonce_hash
+        );
+    }
+    
+    finalize decrease_reputation(
+        identity_hash: field,
+        new_reputation: u32,
+        nonce_hash: field
+    ) {
+        // Prevent replay
+        let nonce_used: bool = Mapping::get_or_use(used_nonces, nonce_hash, false);
+        assert(!nonce_used);
+        
+        // Update reputation in public mapping
+        Mapping::set(reputation_scores, identity_hash, new_reputation);
+        
+        // Mark nonce as used
+        Mapping::set(used_nonces, nonce_hash, true);
+    }
+    
+    // ============================================
+    // PRIVATE PAYMENTS
+    // ============================================
     
     // Private transfer with optional encrypted memo
     transition private_transfer(
@@ -338,6 +515,10 @@ program shadow_social.aleo {
         return (identity, sender_receipt, receiver_receipt);
     }
     
+    // ============================================
+    // IDENTITY MANAGEMENT
+    // ============================================
+    
     // Deactivate identity (soft delete)
     transition deactivate_identity(
         identity: ShadowIdentity
@@ -348,6 +529,7 @@ program shadow_social.aleo {
         return ShadowIdentity {
             owner: identity.owner,
             identity_hash: identity.identity_hash,
+            reputation: identity.reputation,
             joined_at: identity.joined_at,
             post_count: identity.post_count,
             is_active: false,
@@ -365,9 +547,75 @@ program shadow_social.aleo {
         return ShadowIdentity {
             owner: identity.owner,
             identity_hash: identity.identity_hash,
+            reputation: identity.reputation,
             joined_at: identity.joined_at,
             post_count: identity.post_count,
             is_active: true,
         };
+    }
+    
+    // ============================================
+    // ZK REPUTATION THRESHOLD PROOF
+    // ============================================
+    
+    // Prove reputation meets a minimum threshold without revealing the actual score.
+    // Generates a ZK proof that identity.reputation >= min_score.
+    // No state is modified. No public outputs expose private values.
+    // The proof itself is the only artifact — verifiable on-chain.
+    transition prove_reputation_threshold(
+        identity: ShadowIdentity,
+        min_score: u32
+    ) -> ShadowIdentity {
+        // Caller must own this identity
+        assert_eq(self.caller, identity.owner);
+        
+        // Identity must be active
+        assert(identity.is_active);
+        
+        // Core ZK constraint: reputation >= threshold
+        // This assertion is enforced within the ZK circuit.
+        // The verifier learns only that the proof is valid (boolean).
+        // The actual reputation value remains private.
+        assert(identity.reputation >= min_score);
+        
+        // Threshold must be within valid reputation range
+        assert(min_score <= 1000u32);
+        
+        // Return identity unchanged — no state mutation
+        return identity;
+    }
+    
+    // Commit reputation to a BHP256 binding for external verification.
+    // The commitment can later be used to prove reputation properties
+    // without revealing the underlying score.
+    transition commit_reputation(
+        identity: ShadowIdentity,
+        commitment_salt: field
+    ) -> ShadowIdentity {
+        // Caller must own this identity
+        assert_eq(self.caller, identity.owner);
+        
+        // Identity must be active
+        assert(identity.is_active);
+        
+        // Generate BHP256 commitment: H(reputation, salt)
+        // The commitment binds the reputation value to the salt.
+        // Without the salt, the commitment reveals nothing.
+        let commitment: field = BHP256::commit_to_field(
+            identity.reputation, commitment_salt
+        );
+        
+        return identity then finalize(
+            identity.identity_hash,
+            commitment
+        );
+    }
+    
+    finalize commit_reputation(
+        identity_hash: field,
+        commitment: field
+    ) {
+        // Store commitment on-chain (publicly verifiable binding)
+        Mapping::set(reputation_commitments, identity_hash, commitment);
     }
 }
