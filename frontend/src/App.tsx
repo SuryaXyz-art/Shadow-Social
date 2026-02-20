@@ -2,6 +2,8 @@ import { useState, useCallback, useEffect, lazy, Suspense } from 'react'
 import './App.css'
 import Header from './components/Header'
 import Landing from './components/Landing'
+import { detectWallets, connectWallet as connectAleoWallet } from './wallet'
+import type { AleoWallet, WalletType } from './wallet'
 
 const Feed = lazy(() => import('./components/Feed'))
 const Messages = lazy(() => import('./components/Messages'))
@@ -39,6 +41,7 @@ export interface Message {
 export interface WalletState {
   connected: boolean
   address: string | null
+  type: WalletType | null
 }
 
 type Page = 'landing' | 'feed' | 'messages' | 'payments' | 'reputation'
@@ -59,8 +62,85 @@ function PageLoader() {
   )
 }
 
+function WalletModal({ onSelect, onClose }: {
+  onSelect: (type: WalletType) => void
+  onClose: () => void
+}) {
+  const available = detectWallets()
+
+  return (
+    <div className="wallet-modal-overlay" onClick={onClose}>
+      <div className="wallet-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="wallet-modal-header">
+          <h3>Connect Wallet</h3>
+          <button className="wallet-modal-close" onClick={onClose}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="18" height="18">
+              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="wallet-modal-options">
+          <button
+            className={`wallet-option ${available.includes('leo') ? '' : 'wallet-option-disabled'}`}
+            onClick={() => available.includes('leo') ? onSelect('leo') : window.open('https://leo.app', '_blank')}
+            id="connect-leo-wallet"
+          >
+            <div className="wallet-option-info">
+              <span className="wallet-option-name">Leo Wallet</span>
+              <span className="wallet-option-status">
+                {available.includes('leo') ? 'Detected' : 'Not installed'}
+              </span>
+            </div>
+            <span className="wallet-option-action">
+              {available.includes('leo') ? 'Connect' : 'Install'}
+            </span>
+          </button>
+
+          <button
+            className={`wallet-option ${available.includes('puzzle') ? '' : 'wallet-option-disabled'}`}
+            onClick={() => available.includes('puzzle') ? onSelect('puzzle') : window.open('https://puzzle.online', '_blank')}
+            id="connect-puzzle-wallet"
+          >
+            <div className="wallet-option-info">
+              <span className="wallet-option-name">Puzzle Wallet</span>
+              <span className="wallet-option-status">
+                {available.includes('puzzle') ? 'Detected' : 'Not installed'}
+              </span>
+            </div>
+            <span className="wallet-option-action">
+              {available.includes('puzzle') ? 'Connect' : 'Install'}
+            </span>
+          </button>
+
+          <div className="wallet-divider">
+            <span>or</span>
+          </div>
+
+          <button
+            className="wallet-option wallet-option-demo"
+            onClick={() => onSelect('demo')}
+            id="connect-demo-wallet"
+          >
+            <div className="wallet-option-info">
+              <span className="wallet-option-name">Demo Mode</span>
+              <span className="wallet-option-status">Simulated wallet for preview</span>
+            </div>
+            <span className="wallet-option-action">Enter</span>
+          </button>
+        </div>
+
+        <p className="wallet-modal-note">
+          Install Leo Wallet or Puzzle Wallet to sign real transactions on Aleo {NETWORK}.
+        </p>
+      </div>
+    </div>
+  )
+}
+
 function App() {
-  const [wallet, setWallet] = useState<WalletState>({ connected: false, address: null })
+  const [wallet, setWallet] = useState<WalletState>({ connected: false, address: null, type: null })
+  const [aleoWallet, setAleoWallet] = useState<AleoWallet | null>(null)
   const [identity, setIdentity] = useState<ShadowIdentity | null>(null)
   const [currentPage, setCurrentPage] = useState<Page>('landing')
   const [posts, setPosts] = useState<Post[]>([])
@@ -69,6 +149,7 @@ function App() {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
   const [cooldownUntil, setCooldownUntil] = useState<number>(0)
   const [cooldownRemaining, setCooldownRemaining] = useState(0)
+  const [showWalletModal, setShowWalletModal] = useState(false)
 
   const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type })
@@ -88,24 +169,30 @@ function App() {
     return () => clearInterval(interval)
   }, [cooldownUntil])
 
-  const connectWallet = async () => {
+  const handleWalletSelect = async (type: WalletType) => {
+    setShowWalletModal(false)
     setIsLoading(true)
     try {
-      if (typeof window !== 'undefined' && (window as any).aleo) {
-        const address = await (window as any).aleo.connect()
-        setWallet({ connected: true, address })
-        await createIdentity(address)
+      const w = await connectAleoWallet(type)
+      setAleoWallet(w)
+      setWallet({ connected: true, address: w.publicKey, type })
+      await createIdentity(w.publicKey)
+
+      if (type === 'demo') {
+        showToast('Connected in demo mode')
       } else {
-        await new Promise(r => setTimeout(r, 1200))
-        const demoAddress = 'aleo12tjzsme3phssmvpzdnc3sjqgt5257c8q2l8unvnek6d3gnrquu9qat53gv'
-        setWallet({ connected: true, address: demoAddress })
-        await createIdentity(demoAddress)
+        showToast(`Connected via ${type === 'leo' ? 'Leo' : 'Puzzle'} Wallet`)
       }
-    } catch {
-      showToast('Failed to connect wallet', 'error')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to connect wallet'
+      showToast(message, 'error')
     } finally {
       setIsLoading(false)
     }
+  }
+
+  const openWalletModal = () => {
+    setShowWalletModal(true)
   }
 
   const createIdentity = async (address: string) => {
@@ -124,16 +211,41 @@ function App() {
       isActive: true
     })
     setCurrentPage('feed')
-    showToast('Shadow identity created')
   }
 
-  const disconnectWallet = () => {
-    setWallet({ connected: false, address: null })
+  const disconnectWallet = async () => {
+    if (aleoWallet && aleoWallet.type !== 'demo') {
+      try {
+        await aleoWallet.disconnect()
+      } catch {
+        // Wallet may already be disconnected
+      }
+    }
+    setAleoWallet(null)
+    setWallet({ connected: false, address: null, type: null })
     setIdentity(null)
     setCurrentPage('landing')
     setPosts([])
     setMessages([])
     showToast('Disconnected')
+  }
+
+  const executeTransaction = async (functionName: string, inputs: string[]): Promise<string | null> => {
+    if (!aleoWallet) return null
+
+    try {
+      const txId = await aleoWallet.requestExecution({
+        programId: PROGRAM_ID,
+        functionName,
+        inputs,
+        fee: 0.5,
+      })
+      return txId
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Transaction failed'
+      showToast(message, 'error')
+      return null
+    }
   }
 
   const createPost = async (content: string) => {
@@ -146,8 +258,6 @@ function App() {
 
     setIsLoading(true)
     try {
-      await new Promise(r => setTimeout(r, 1800))
-
       const encoder = new TextEncoder()
       const salt = crypto.getRandomValues(new Uint8Array(16))
       const data = encoder.encode(content + Array.from(salt).join(''))
@@ -155,8 +265,15 @@ function App() {
       const hashArray = Array.from(new Uint8Array(hashBuffer))
       const contentHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16)
 
+      // Execute on-chain transaction if wallet supports it
+      const txId = await executeTransaction('create_post', [
+        `${identity.identityHash}field`,
+        `${contentHash}field`,
+        `${crypto.getRandomValues(new Uint32Array(1))[0]}u64`,
+      ])
+
       const newPost: Post = {
-        id: crypto.randomUUID(),
+        id: txId || crypto.randomUUID(),
         contentHash,
         content,
         createdAt: Date.now(),
@@ -171,7 +288,12 @@ function App() {
       } : null)
 
       setCooldownUntil(Date.now() + POST_COOLDOWN_MS)
-      showToast('Posted anonymously via ZK proof')
+
+      if (txId && wallet.type !== 'demo') {
+        showToast(`Posted on-chain. TX: ${txId.slice(0, 12)}...`)
+      } else {
+        showToast('Posted anonymously via ZK proof')
+      }
     } catch {
       showToast('Failed to create post', 'error')
     } finally {
@@ -184,13 +306,18 @@ function App() {
 
     setIsLoading(true)
     try {
-      await new Promise(r => setTimeout(r, 1500))
-
       const encoder = new TextEncoder()
       const data = encoder.encode(content)
       const hashBuffer = await crypto.subtle.digest('SHA-256', data)
       const hashArray = Array.from(new Uint8Array(hashBuffer))
       const contentHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16)
+
+      // Execute on-chain transaction if wallet supports it
+      await executeTransaction('send_message', [
+        `${identity.identityHash}field`,
+        `${_receiver}`,
+        `${contentHash}field`,
+      ])
 
       const newMessage: Message = {
         id: crypto.randomUUID(),
@@ -219,13 +346,14 @@ function App() {
           onNavigate={setCurrentPage}
           onDisconnect={disconnectWallet}
           network={NETWORK}
+          walletType={wallet.type}
         />
       )}
 
       <main className="main-content">
         {currentPage === 'landing' && (
           <Landing
-            onConnect={connectWallet}
+            onConnect={openWalletModal}
             isLoading={isLoading}
             programId={PROGRAM_ID}
           />
@@ -254,6 +382,8 @@ function App() {
             <Payments
               wallet={wallet}
               showToast={showToast}
+              aleoWallet={aleoWallet}
+              programId={PROGRAM_ID}
             />
           )}
 
@@ -261,6 +391,8 @@ function App() {
             <ReputationProofPanel
               identity={identity}
               showToast={showToast}
+              aleoWallet={aleoWallet}
+              programId={PROGRAM_ID}
             />
           )}
         </Suspense>
@@ -293,6 +425,13 @@ function App() {
             ZK Proof
           </button>
         </nav>
+      )}
+
+      {showWalletModal && (
+        <WalletModal
+          onSelect={handleWalletSelect}
+          onClose={() => setShowWalletModal(false)}
+        />
       )}
 
       {toast && (

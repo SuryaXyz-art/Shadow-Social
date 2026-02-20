@@ -1,9 +1,12 @@
 import { useState } from 'react'
 import type { WalletState } from '../App'
+import type { AleoWallet } from '../wallet'
 
 interface PaymentsProps {
     wallet: WalletState
-    showToast: (message: string, type: 'success' | 'error') => void
+    showToast: (message: string, type?: 'success' | 'error') => void
+    aleoWallet: AleoWallet | null
+    programId: string
 }
 
 function ArrowUpIcon() {
@@ -30,12 +33,13 @@ function CheckIcon() {
     )
 }
 
-export default function Payments({ wallet, showToast }: PaymentsProps) {
+export default function Payments({ wallet, showToast, aleoWallet, programId }: PaymentsProps) {
     const [receiver, setReceiver] = useState('')
     const [amount, setAmount] = useState('')
     const [memo, setMemo] = useState('')
     const [isLoading, setIsLoading] = useState(false)
     const [showSuccess, setShowSuccess] = useState(false)
+    const [lastTxId, setLastTxId] = useState<string | null>(null)
 
     const handleSend = async () => {
         if (!receiver.trim() || !amount.trim()) {
@@ -49,17 +53,50 @@ export default function Payments({ wallet, showToast }: PaymentsProps) {
             return
         }
 
+        if (!receiver.startsWith('aleo1')) {
+            showToast('Recipient must be a valid Aleo address (aleo1...)', 'error')
+            return
+        }
+
         setIsLoading(true)
         try {
-            // Simulate ZK private transfer proof generation
-            await new Promise(r => setTimeout(r, 2500))
+            let txId: string | null = null
+
+            if (aleoWallet && aleoWallet.type !== 'demo') {
+                // Execute real private transfer via wallet
+                txId = await aleoWallet.requestExecution({
+                    programId,
+                    functionName: 'private_transfer',
+                    inputs: [
+                        receiver,
+                        `${Math.floor(num * 1_000_000)}u64`,
+                        memo ? `${memo}field` : '0field',
+                    ],
+                    fee: 0.5,
+                })
+                setLastTxId(txId)
+            } else {
+                // Demo mode simulation
+                await new Promise(r => setTimeout(r, 2500))
+                txId = `at1${Array.from(crypto.getRandomValues(new Uint8Array(29)))
+                    .map(b => b.toString(16).padStart(2, '0')).join('')}`
+                setLastTxId(txId)
+            }
+
             setShowSuccess(true)
-            showToast(`${amount} ALEO transferred privately`, 'success')
+
+            if (wallet.type !== 'demo' && txId) {
+                showToast(`${amount} ALEO sent. TX: ${txId.slice(0, 12)}...`)
+            } else {
+                showToast(`${amount} ALEO transferred privately`)
+            }
+
             setTimeout(() => {
                 setShowSuccess(false)
                 setAmount('')
                 setMemo('')
-            }, 3000)
+                setLastTxId(null)
+            }, 4000)
         } catch {
             showToast('Transfer failed', 'error')
         } finally {
@@ -77,6 +114,11 @@ export default function Payments({ wallet, showToast }: PaymentsProps) {
                         <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '12px' }}>
                             {amount} ALEO transferred privately
                         </p>
+                        {lastTxId && (
+                            <code className="mono" style={{ fontSize: '0.72rem', color: 'var(--text-dim)', display: 'block', marginBottom: '12px' }}>
+                                TX: {lastTxId.slice(0, 24)}...
+                            </code>
+                        )}
                         <span className="badge badge-accent">Zero-Knowledge Verified</span>
                     </div>
                 </div>
@@ -139,7 +181,10 @@ export default function Payments({ wallet, showToast }: PaymentsProps) {
                     <div className="pay-info">
                         <ShieldIcon />
                         <span>
-                            Transaction is fully private. Sender, receiver, and amount are hidden via zero-knowledge proofs.
+                            {wallet.type !== 'demo'
+                                ? 'Transaction will be signed by your wallet and submitted to the Aleo network.'
+                                : 'Transaction is fully private. Sender, receiver, and amount are hidden via zero-knowledge proofs.'
+                            }
                         </span>
                     </div>
 
@@ -151,7 +196,9 @@ export default function Payments({ wallet, showToast }: PaymentsProps) {
                         id="send-payment-btn"
                     >
                         {isLoading ? (
-                            <><span className="spinner"></span>Generating ZK Proof</>
+                            <><span className="spinner"></span>
+                                {wallet.type !== 'demo' ? 'Awaiting Wallet Signature' : 'Generating ZK Proof'}
+                            </>
                         ) : (
                             'Send Private Payment'
                         )}
@@ -161,7 +208,9 @@ export default function Payments({ wallet, showToast }: PaymentsProps) {
                 <div className="divider"></div>
 
                 <div className="pay-wallet">
-                    <p className="pay-wallet-label">Connected Wallet</p>
+                    <p className="pay-wallet-label">
+                        Connected via {wallet.type === 'leo' ? 'Leo Wallet' : wallet.type === 'puzzle' ? 'Puzzle Wallet' : 'Demo Mode'}
+                    </p>
                     <code className="pay-wallet-addr">
                         {wallet.address?.slice(0, 16)}...{wallet.address?.slice(-8)}
                     </code>

@@ -1,4 +1,5 @@
 import type { ShadowIdentity } from '../App'
+import type { WalletType } from '../wallet'
 
 type Page = 'landing' | 'feed' | 'messages' | 'payments' | 'reputation'
 
@@ -8,6 +9,7 @@ interface HeaderProps {
     onNavigate: (page: Page) => void
     onDisconnect: () => void
     network: string
+    walletType: WalletType | null
 }
 
 function LogoSvg() {
@@ -19,7 +21,7 @@ function LogoSvg() {
     )
 }
 
-export default function Header({ identity, currentPage, onNavigate, onDisconnect, network }: HeaderProps) {
+export default function Header({ identity, currentPage, onNavigate, onDisconnect, network, walletType }: HeaderProps) {
     return (
         <header className="header">
             <div className="header-inner">
@@ -72,6 +74,9 @@ export default function Header({ identity, currentPage, onNavigate, onDisconnect
                             <div className="wallet-badge">
                                 <span className="wallet-dot"></span>
                                 <span className="mono">{identity.identityHash.slice(0, 8)}</span>
+                                {walletType && walletType !== 'demo' && (
+                                    <span className="wallet-type-badge">{walletType === 'leo' ? 'Leo' : 'Puzzle'}</span>
+                                )}
                             </div>
                         </>
                     )}

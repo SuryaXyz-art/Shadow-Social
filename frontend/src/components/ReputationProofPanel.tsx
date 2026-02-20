@@ -1,9 +1,12 @@
 import { useState } from 'react'
 import type { ShadowIdentity } from '../App'
+import type { AleoWallet } from '../wallet'
 
 interface ReputationProofPanelProps {
     identity: ShadowIdentity
     showToast: (message: string, type?: 'success' | 'error') => void
+    aleoWallet: AleoWallet | null
+    programId: string
 }
 
 function ShieldIcon() {
@@ -32,7 +35,7 @@ function XCircleIcon() {
 
 type ProofState = 'idle' | 'generating' | 'success' | 'failure'
 
-export default function ReputationProofPanel({ identity, showToast }: ReputationProofPanelProps) {
+export default function ReputationProofPanel({ identity, showToast, aleoWallet, programId }: ReputationProofPanelProps) {
     const [threshold, setThreshold] = useState('')
     const [proofState, setProofState] = useState<ProofState>('idle')
     const [lastThreshold, setLastThreshold] = useState(0)
@@ -54,16 +57,29 @@ export default function ReputationProofPanel({ identity, showToast }: Reputation
         setLastThreshold(value)
 
         try {
-            // Simulate ZK proof generation (wallet transaction)
-            await new Promise(r => setTimeout(r, 2200))
-
-            // ZK constraint: reputation >= threshold
-            if (identity.reputation >= value) {
+            if (aleoWallet && aleoWallet.type !== 'demo') {
+                // Execute real on-chain ZK proof via wallet
+                await aleoWallet.requestExecution({
+                    programId,
+                    functionName: 'prove_reputation_threshold',
+                    inputs: [
+                        `${identity.identityHash}field`,
+                        `${value}u32`,
+                    ],
+                    fee: 0.25,
+                })
                 setProofState('success')
-                showToast('Reputation threshold proof verified')
+                showToast('Reputation threshold proof verified on-chain')
             } else {
-                setProofState('failure')
-                showToast('Proof failed: threshold not met', 'error')
+                // Demo mode: local assertion
+                await new Promise(r => setTimeout(r, 2200))
+                if (identity.reputation >= value) {
+                    setProofState('success')
+                    showToast('Reputation threshold proof verified')
+                } else {
+                    setProofState('failure')
+                    showToast('Proof failed: threshold not met', 'error')
+                }
             }
         } catch {
             setProofState('failure')
@@ -159,8 +175,10 @@ export default function ReputationProofPanel({ identity, showToast }: Reputation
                 <div className="proof-info">
                     <ShieldIcon />
                     <span>
-                        The proof is generated locally via your wallet. Only the boolean result (pass/fail)
-                        is verifiable on-chain. No private fields are exposed.
+                        {aleoWallet && aleoWallet.type !== 'demo'
+                            ? 'Your wallet will sign the ZK proof transaction. Only the boolean result is published on-chain.'
+                            : 'The proof is generated locally via your wallet. Only the boolean result (pass/fail) is verifiable on-chain. No private fields are exposed.'
+                        }
                     </span>
                 </div>
 
