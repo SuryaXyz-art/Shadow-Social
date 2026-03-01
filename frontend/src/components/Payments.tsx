@@ -1,11 +1,13 @@
 import { useState } from 'react'
-import type { WalletState } from '../App'
-import type { AleoWallet } from '../wallet'
+import type { WalletMode } from '../App'
+import { randomFieldValue } from '../wallet'
 
 interface PaymentsProps {
-    wallet: WalletState
+    walletMode: WalletMode
     showToast: (message: string, type?: 'success' | 'error') => void
-    aleoWallet: AleoWallet | null
+    executeTransaction: (functionName: string, inputs: string[], fee?: number) => Promise<string | null>
+    publicKey?: string
+    identityRecord: string | null
     programId: string
 }
 
@@ -33,7 +35,7 @@ function CheckIcon() {
     )
 }
 
-export default function Payments({ wallet, showToast, aleoWallet, programId }: PaymentsProps) {
+export default function Payments({ walletMode, showToast, executeTransaction, publicKey, identityRecord }: PaymentsProps) {
     const [receiver, setReceiver] = useState('')
     const [amount, setAmount] = useState('')
     const [memo, setMemo] = useState('')
@@ -60,32 +62,39 @@ export default function Payments({ wallet, showToast, aleoWallet, programId }: P
 
         setIsLoading(true)
         try {
+            const amountMicrocredits = Math.floor(num * 1_000_000)
+            const memoHash = memo ? `${memo.length}field` : '0field'
+            const transferSalt = randomFieldValue()
+            const currentBlock = `${Math.floor(Date.now() / 1000)}u64`
+
             let txId: string | null = null
 
-            if (aleoWallet && aleoWallet.type !== 'demo') {
-                // Execute real private transfer via wallet
-                txId = await aleoWallet.requestExecution({
-                    programId,
-                    functionName: 'private_transfer',
-                    inputs: [
-                        receiver,
-                        `${Math.floor(num * 1_000_000)}u64`,
-                        memo ? `${memo}field` : '0field',
-                    ],
-                    fee: 0.5,
-                })
-                setLastTxId(txId)
+            if (walletMode === 'real' && identityRecord) {
+                // Real wallet: match Leo contract signature
+                // private_transfer(identity, receiver, amount, memo_hash, transfer_salt, current_block)
+                txId = await executeTransaction('private_transfer', [
+                    identityRecord,
+                    receiver,
+                    `${amountMicrocredits}u64`,
+                    memoHash,
+                    `${transferSalt}field`,
+                    currentBlock,
+                ])
             } else {
-                // Demo mode simulation
-                await new Promise(r => setTimeout(r, 2500))
-                txId = `at1${Array.from(crypto.getRandomValues(new Uint8Array(29)))
-                    .map(b => b.toString(16).padStart(2, '0')).join('')}`
-                setLastTxId(txId)
+                // Demo mode
+                txId = await executeTransaction('private_transfer', [
+                    receiver,
+                    `${amountMicrocredits}u64`,
+                    memoHash,
+                    `${transferSalt}field`,
+                    currentBlock,
+                ])
             }
 
+            setLastTxId(txId)
             setShowSuccess(true)
 
-            if (wallet.type !== 'demo' && txId) {
+            if (walletMode === 'real' && txId) {
                 showToast(`${amount} ALEO sent. TX: ${txId.slice(0, 12)}...`)
             } else {
                 showToast(`${amount} ALEO transferred privately`)
@@ -181,7 +190,7 @@ export default function Payments({ wallet, showToast, aleoWallet, programId }: P
                     <div className="pay-info">
                         <ShieldIcon />
                         <span>
-                            {wallet.type !== 'demo'
+                            {walletMode === 'real'
                                 ? 'Transaction will be signed by your wallet and submitted to the Aleo network.'
                                 : 'Transaction is fully private. Sender, receiver, and amount are hidden via zero-knowledge proofs.'
                             }
@@ -197,7 +206,7 @@ export default function Payments({ wallet, showToast, aleoWallet, programId }: P
                     >
                         {isLoading ? (
                             <><span className="spinner"></span>
-                                {wallet.type !== 'demo' ? 'Awaiting Wallet Signature' : 'Generating ZK Proof'}
+                                {walletMode === 'real' ? 'Awaiting Wallet Signature' : 'Generating ZK Proof'}
                             </>
                         ) : (
                             'Send Private Payment'
@@ -209,11 +218,13 @@ export default function Payments({ wallet, showToast, aleoWallet, programId }: P
 
                 <div className="pay-wallet">
                     <p className="pay-wallet-label">
-                        Connected via {wallet.type === 'leo' ? 'Leo Wallet' : wallet.type === 'puzzle' ? 'Puzzle Wallet' : 'Demo Mode'}
+                        Connected via {walletMode === 'real' ? 'Leo Wallet' : 'Demo Mode'}
                     </p>
-                    <code className="pay-wallet-addr">
-                        {wallet.address?.slice(0, 16)}...{wallet.address?.slice(-8)}
-                    </code>
+                    {publicKey && (
+                        <code className="pay-wallet-addr">
+                            {publicKey.slice(0, 16)}...{publicKey.slice(-8)}
+                        </code>
+                    )}
                 </div>
             </div>
         </div>

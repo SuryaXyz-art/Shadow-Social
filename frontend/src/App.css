@@ -1301,3 +1301,66 @@
   border: 1px solid var(--accent-border);
   margin-left: 6px;
 }
+
+/* Hero divider between wallet and demo buttons */
+.hero-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.hero-divider span {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* ================================================================
+   WALLET ADAPTER SDK BUTTON OVERRIDES
+   ================================================================ */
+
+.wallet-adapter-button-trigger {
+  background: var(--accent) !important;
+  border-radius: var(--radius-md) !important;
+  font-family: inherit !important;
+  font-size: 0.88rem !important;
+  font-weight: 500 !important;
+  padding: 10px 24px !important;
+  height: auto !important;
+  line-height: 1.5 !important;
+  transition: all 0.2s var(--ease) !important;
+}
+
+.wallet-adapter-button-trigger:hover {
+  background: var(--accent-hover) !important;
+}
+
+.wallet-adapter-modal-wrapper {
+  background: var(--card-bg) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-lg) !important;
+}
+
+.wallet-adapter-modal-title {
+  color: var(--text-primary) !important;
+  font-family: inherit !important;
+}
+
+.wallet-adapter-modal-list .wallet-adapter-button {
+  background: rgba(255, 255, 255, 0.03) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-md) !important;
+  color: var(--text-primary) !important;
+  font-family: inherit !important;
+}
+
+.wallet-adapter-modal-list .wallet-adapter-button:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-color: var(--accent-border) !important;
+}
+
+.wallet-adapter-modal-overlay {
+  background: rgba(0, 0, 0, 0.7) !important;
+  backdrop-filter: blur(8px) !important;
+}

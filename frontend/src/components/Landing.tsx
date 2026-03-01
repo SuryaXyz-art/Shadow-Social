@@ -1,7 +1,10 @@
+import { WalletMultiButton } from '@demox-labs/aleo-wallet-adapter-reactui'
+
 interface LandingProps {
-    onConnect: () => void
+    onDemoMode: () => void
     isLoading: boolean
     programId: string
+    walletConnected: boolean
 }
 
 function LockIcon() {
@@ -52,7 +55,7 @@ function ArrowIcon() {
     )
 }
 
-export default function Landing({ onConnect, isLoading, programId }: LandingProps) {
+export default function Landing({ onDemoMode, isLoading, programId, walletConnected }: LandingProps) {
     return (
         <div className="landing">
             <div className="landing-inner">
@@ -72,26 +75,25 @@ export default function Landing({ onConnect, isLoading, programId }: LandingProp
                     </p>
 
                     <div className="hero-actions">
+                        {/* Official SDK wallet button */}
+                        <WalletMultiButton className="btn btn-primary btn-lg" />
+
+                        <div className="hero-divider">
+                            <span>or</span>
+                        </div>
+
                         <button
-                            className="btn btn-primary btn-lg"
-                            onClick={onConnect}
-                            disabled={isLoading}
-                            id="connect-wallet-btn"
+                            className="btn btn-ghost btn-lg"
+                            onClick={onDemoMode}
+                            disabled={isLoading || walletConnected}
+                            id="demo-mode-btn"
                         >
                             {isLoading ? (
                                 <><span className="spinner"></span>Connecting</>
                             ) : (
-                                'Connect Wallet'
+                                'Try Demo Mode'
                             )}
                         </button>
-                        <a
-                            className="btn btn-ghost btn-lg"
-                            href="https://github.com"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                        >
-                            Documentation
-                        </a>
                     </div>
                 </div>
 
@@ -331,7 +333,7 @@ export default function Landing({ onConnect, isLoading, programId }: LandingProp
                     <span className="footer-sep">|</span>
                     <span>Built on Aleo</span>
                     <span className="footer-sep">|</span>
-                    <a href="https://github.com" target="_blank" rel="noopener noreferrer">GitHub</a>
+                    <a href="https://github.com/SuryaXyz-art/Shadow-Social" target="_blank" rel="noopener noreferrer">GitHub</a>
                     <span className="footer-sep">|</span>
                     <a href="https://developer.aleo.org/" target="_blank" rel="noopener noreferrer">Docs</a>
                     <span className="footer-sep">|</span>

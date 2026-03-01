@@ -1,5 +1,5 @@
 import type { ShadowIdentity } from '../App'
-import type { WalletType } from '../wallet'
+import type { WalletMode } from '../App'
 
 type Page = 'landing' | 'feed' | 'messages' | 'payments' | 'reputation'
 
@@ -9,7 +9,8 @@ interface HeaderProps {
     onNavigate: (page: Page) => void
     onDisconnect: () => void
     network: string
-    walletType: WalletType | null
+    walletMode: WalletMode | null
+    publicKey?: string
 }
 
 function LogoSvg() {
@@ -21,7 +22,7 @@ function LogoSvg() {
     )
 }
 
-export default function Header({ identity, currentPage, onNavigate, onDisconnect, network, walletType }: HeaderProps) {
+export default function Header({ identity, currentPage, onNavigate, onDisconnect, network, walletMode, publicKey }: HeaderProps) {
     return (
         <header className="header">
             <div className="header-inner">
@@ -73,9 +74,17 @@ export default function Header({ identity, currentPage, onNavigate, onDisconnect
 
                             <div className="wallet-badge">
                                 <span className="wallet-dot"></span>
-                                <span className="mono">{identity.identityHash.slice(0, 8)}</span>
-                                {walletType && walletType !== 'demo' && (
-                                    <span className="wallet-type-badge">{walletType === 'leo' ? 'Leo' : 'Puzzle'}</span>
+                                <span className="mono">
+                                    {walletMode === 'real' && publicKey
+                                        ? `${publicKey.slice(0, 8)}...${publicKey.slice(-4)}`
+                                        : identity.identityHash.slice(0, 8)
+                                    }
+                                </span>
+                                {walletMode === 'real' && (
+                                    <span className="wallet-type-badge">Leo</span>
+                                )}
+                                {walletMode === 'demo' && (
+                                    <span className="wallet-type-badge" style={{ opacity: 0.6 }}>Demo</span>
                                 )}
                             </div>
                         </>

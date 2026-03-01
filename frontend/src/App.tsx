@@ -1,17 +1,15 @@
 import { useState, useCallback, useEffect, lazy, Suspense } from 'react'
+import { useWallet } from '@demox-labs/aleo-wallet-adapter-react'
+import { WalletMultiButton } from '@demox-labs/aleo-wallet-adapter-reactui'
 import './App.css'
 import Header from './components/Header'
 import Landing from './components/Landing'
-import { detectWallets, connectWallet as connectAleoWallet } from './wallet'
-import type { AleoWallet, WalletType } from './wallet'
+import { safeHash, randomFieldValue, buildTransaction, PROGRAM_ID, NETWORK } from './wallet'
 
 const Feed = lazy(() => import('./components/Feed'))
 const Messages = lazy(() => import('./components/Messages'))
 const Payments = lazy(() => import('./components/Payments'))
 const ReputationProofPanel = lazy(() => import('./components/ReputationProofPanel'))
-
-const PROGRAM_ID = import.meta.env.VITE_PROGRAM_ID || 'shadow_social.aleo'
-const NETWORK = import.meta.env.VITE_NETWORK || 'testnet'
 
 export interface ShadowIdentity {
   identityHash: string
@@ -38,11 +36,7 @@ export interface Message {
   isRead: boolean
 }
 
-export interface WalletState {
-  connected: boolean
-  address: string | null
-  type: WalletType | null
-}
+export type WalletMode = 'real' | 'demo'
 
 type Page = 'landing' | 'feed' | 'messages' | 'payments' | 'reputation'
 
@@ -62,85 +56,16 @@ function PageLoader() {
   )
 }
 
-function WalletModal({ onSelect, onClose }: {
-  onSelect: (type: WalletType) => void
-  onClose: () => void
-}) {
-  const available = detectWallets()
-
-  return (
-    <div className="wallet-modal-overlay" onClick={onClose}>
-      <div className="wallet-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="wallet-modal-header">
-          <h3>Connect Wallet</h3>
-          <button className="wallet-modal-close" onClick={onClose}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="18" height="18">
-              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </div>
-
-        <div className="wallet-modal-options">
-          <button
-            className={`wallet-option ${available.includes('leo') ? '' : 'wallet-option-disabled'}`}
-            onClick={() => available.includes('leo') ? onSelect('leo') : window.open('https://leo.app', '_blank')}
-            id="connect-leo-wallet"
-          >
-            <div className="wallet-option-info">
-              <span className="wallet-option-name">Leo Wallet</span>
-              <span className="wallet-option-status">
-                {available.includes('leo') ? 'Detected' : 'Not installed'}
-              </span>
-            </div>
-            <span className="wallet-option-action">
-              {available.includes('leo') ? 'Connect' : 'Install'}
-            </span>
-          </button>
-
-          <button
-            className={`wallet-option ${available.includes('puzzle') ? '' : 'wallet-option-disabled'}`}
-            onClick={() => available.includes('puzzle') ? onSelect('puzzle') : window.open('https://puzzle.online', '_blank')}
-            id="connect-puzzle-wallet"
-          >
-            <div className="wallet-option-info">
-              <span className="wallet-option-name">Puzzle Wallet</span>
-              <span className="wallet-option-status">
-                {available.includes('puzzle') ? 'Detected' : 'Not installed'}
-              </span>
-            </div>
-            <span className="wallet-option-action">
-              {available.includes('puzzle') ? 'Connect' : 'Install'}
-            </span>
-          </button>
-
-          <div className="wallet-divider">
-            <span>or</span>
-          </div>
-
-          <button
-            className="wallet-option wallet-option-demo"
-            onClick={() => onSelect('demo')}
-            id="connect-demo-wallet"
-          >
-            <div className="wallet-option-info">
-              <span className="wallet-option-name">Demo Mode</span>
-              <span className="wallet-option-status">Simulated wallet for preview</span>
-            </div>
-            <span className="wallet-option-action">Enter</span>
-          </button>
-        </div>
-
-        <p className="wallet-modal-note">
-          Install Leo Wallet or Puzzle Wallet to sign real transactions on Aleo {NETWORK}.
-        </p>
-      </div>
-    </div>
-  )
-}
-
 function App() {
-  const [wallet, setWallet] = useState<WalletState>({ connected: false, address: null, type: null })
-  const [aleoWallet, setAleoWallet] = useState<AleoWallet | null>(null)
+  const {
+    publicKey,
+    connected,
+    disconnect: walletDisconnect,
+    requestTransaction,
+    requestRecords,
+  } = useWallet()
+
+  const [walletMode, setWalletMode] = useState<WalletMode | null>(null)
   const [identity, setIdentity] = useState<ShadowIdentity | null>(null)
   const [currentPage, setCurrentPage] = useState<Page>('landing')
   const [posts, setPosts] = useState<Post[]>([])
@@ -149,13 +74,14 @@ function App() {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
   const [cooldownUntil, setCooldownUntil] = useState<number>(0)
   const [cooldownRemaining, setCooldownRemaining] = useState(0)
-  const [showWalletModal, setShowWalletModal] = useState(false)
+  const [identityRecord, setIdentityRecord] = useState<string | null>(null)
 
   const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type })
     setTimeout(() => setToast(null), 3000)
   }, [])
 
+  // Cooldown timer
   useEffect(() => {
     if (cooldownUntil <= Date.now()) {
       setCooldownRemaining(0)
@@ -169,89 +95,162 @@ function App() {
     return () => clearInterval(interval)
   }, [cooldownUntil])
 
-  const handleWalletSelect = async (type: WalletType) => {
-    setShowWalletModal(false)
+  // When wallet connects via SDK, auto-setup identity
+  useEffect(() => {
+    if (connected && publicKey && !identity && walletMode !== 'demo') {
+      setWalletMode('real')
+      handleRealWalletConnect(publicKey)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, publicKey])
+
+  // ─── Real Wallet Connection ────────────────────────────────────────
+  const handleRealWalletConnect = async (address: string) => {
     setIsLoading(true)
     try {
-      const w = await connectAleoWallet(type)
-      setAleoWallet(w)
-      setWallet({ connected: true, address: w.publicKey, type })
-      await createIdentity(w.publicKey)
-
-      if (type === 'demo') {
-        showToast('Connected in demo mode')
-      } else {
-        showToast(`Connected via ${type === 'leo' ? 'Leo' : 'Puzzle'} Wallet`)
+      // Try to fetch existing ShadowIdentity records from the wallet
+      let existingRecord: string | null = null
+      if (requestRecords) {
+        try {
+          const records = await requestRecords(PROGRAM_ID)
+          // Find a ShadowIdentity record
+          if (records && records.length > 0) {
+            const identityRec = records.find((r: unknown) => {
+              const rec = r as Record<string, unknown>
+              return typeof rec === 'object' && rec !== null && (
+                String(rec.functionId || '').includes('ShadowIdentity') ||
+                String(rec.recordName || '').includes('ShadowIdentity') ||
+                String(JSON.stringify(rec)).includes('identity_hash')
+              )
+            })
+            if (identityRec) {
+              existingRecord = JSON.stringify(identityRec)
+            }
+          }
+        } catch {
+          // Records may not be available yet — user may need to register
+        }
       }
+
+      if (existingRecord) {
+        // Use existing identity from chain
+        setIdentityRecord(existingRecord)
+        const hash = (await safeHash(address)).slice(0, 32)
+        setIdentity({
+          identityHash: hash,
+          reputation: 10,
+          joinedAt: Date.now(),
+          postCount: 0,
+          isActive: true
+        })
+        showToast('Connected via Leo Wallet — identity found')
+      } else {
+        // No existing identity — register one
+        try {
+          if (requestTransaction) {
+            const salt = randomFieldValue()
+            const currentBlock = '1u64' // Current block placeholder
+            const tx = buildTransaction(
+              address,
+              'register_identity',
+              [`${salt}field`, currentBlock],
+              500_000,
+            )
+            const txId = await requestTransaction(tx)
+            showToast(`Identity registered. TX: ${String(txId).slice(0, 12)}...`)
+          }
+        } catch (err) {
+          // If registration fails (maybe already registered), continue anyway
+          console.warn('register_identity failed:', err)
+        }
+
+        // Create local identity representation
+        const salt = typeof crypto !== 'undefined' && crypto.getRandomValues
+          ? Array.from(crypto.getRandomValues(new Uint8Array(32))).join('')
+          : Array.from({ length: 32 }, () => Math.floor(Math.random() * 256)).join('')
+        const identityHash = (await safeHash(address + salt)).slice(0, 32)
+
+        setIdentity({
+          identityHash,
+          reputation: 10,
+          joinedAt: Date.now(),
+          postCount: 0,
+          isActive: true
+        })
+        showToast('Connected via Leo Wallet')
+      }
+      setCurrentPage('feed')
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to connect wallet'
+      const message = err instanceof Error ? err.message : 'Failed to connect'
       showToast(message, 'error')
     } finally {
       setIsLoading(false)
     }
   }
 
-  const openWalletModal = () => {
-    const available = detectWallets()
+  // ─── Demo Mode ─────────────────────────────────────────────────────
+  const enterDemoMode = async () => {
+    setIsLoading(true)
+    setWalletMode('demo')
+    try {
+      await new Promise(r => setTimeout(r, 800))
+      const address = 'aleo12tjzsme3phssmvpzdnc3sjqgt5257c8q2l8unvnek6d3gnrquu9qat53gv'
+      const salt = typeof crypto !== 'undefined' && crypto.getRandomValues
+        ? Array.from(crypto.getRandomValues(new Uint8Array(32))).join('')
+        : Array.from({ length: 32 }, () => Math.floor(Math.random() * 256)).join('')
+      const identityHash = (await safeHash(address + salt)).slice(0, 32)
 
-    if (available.length === 0) {
-      // No wallet extensions — auto-connect in demo mode
-      handleWalletSelect('demo')
-    } else if (available.length === 1) {
-      // Exactly one wallet — auto-connect to it
-      handleWalletSelect(available[0])
-    } else {
-      // Multiple wallets — let user choose
-      setShowWalletModal(true)
+      setIdentity({
+        identityHash,
+        reputation: 10,
+        joinedAt: Date.now(),
+        postCount: 0,
+        isActive: true
+      })
+      setCurrentPage('feed')
+      showToast('Connected in demo mode')
+    } catch {
+      showToast('Failed to enter demo mode', 'error')
+    } finally {
+      setIsLoading(false)
     }
   }
 
-  const createIdentity = async (address: string) => {
-    const encoder = new TextEncoder()
-    const salt = crypto.getRandomValues(new Uint8Array(32))
-    const data = encoder.encode(address + Array.from(salt).join(''))
-    const hashBuffer = await crypto.subtle.digest('SHA-256', data)
-    const hashArray = Array.from(new Uint8Array(hashBuffer))
-    const identityHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 32)
-
-    setIdentity({
-      identityHash,
-      reputation: 10,
-      joinedAt: Date.now(),
-      postCount: 0,
-      isActive: true
-    })
-    setCurrentPage('feed')
-  }
-
+  // ─── Disconnect ────────────────────────────────────────────────────
   const disconnectWallet = async () => {
-    if (aleoWallet && aleoWallet.type !== 'demo') {
+    if (walletMode === 'real') {
       try {
-        await aleoWallet.disconnect()
+        await walletDisconnect()
       } catch {
-        // Wallet may already be disconnected
+        // Already disconnected
       }
     }
-    setAleoWallet(null)
-    setWallet({ connected: false, address: null, type: null })
+    setWalletMode(null)
     setIdentity(null)
+    setIdentityRecord(null)
     setCurrentPage('landing')
     setPosts([])
     setMessages([])
     showToast('Disconnected')
   }
 
-  const executeTransaction = async (functionName: string, inputs: string[]): Promise<string | null> => {
-    if (!aleoWallet) return null
+  // ─── Transaction Execution ─────────────────────────────────────────
+  const executeTransaction = async (functionName: string, inputs: string[], fee = 500_000): Promise<string | null> => {
+    if (walletMode === 'demo') {
+      // Demo simulation
+      await new Promise(r => setTimeout(r, 2000))
+      const txId = `at1${Array.from({ length: 58 }, () =>
+        Math.floor(Math.random() * 16).toString(16)
+      ).join('')}`
+      return txId
+    }
+
+    if (!publicKey || !requestTransaction) return null
 
     try {
-      const txId = await aleoWallet.requestExecution({
-        programId: PROGRAM_ID,
-        functionName,
-        inputs,
-        fee: 0.5,
-      })
-      return txId
+      const tx = buildTransaction(publicKey, functionName, inputs, fee)
+      const txId = await requestTransaction(tx)
+      return typeof txId === 'string' ? txId : JSON.stringify(txId)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Transaction failed'
       showToast(message, 'error')
@@ -259,6 +258,7 @@ function App() {
     }
   }
 
+  // ─── Create Post ───────────────────────────────────────────────────
   const createPost = async (content: string) => {
     if (!identity) return
 
@@ -269,22 +269,40 @@ function App() {
 
     setIsLoading(true)
     try {
-      const encoder = new TextEncoder()
-      const salt = crypto.getRandomValues(new Uint8Array(16))
-      const data = encoder.encode(content + Array.from(salt).join(''))
-      const hashBuffer = await crypto.subtle.digest('SHA-256', data)
-      const hashArray = Array.from(new Uint8Array(hashBuffer))
-      const contentHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16)
+      const salt = typeof crypto !== 'undefined' && crypto.getRandomValues
+        ? Array.from(crypto.getRandomValues(new Uint8Array(16))).join('')
+        : Array.from({ length: 16 }, () => Math.floor(Math.random() * 256)).join('')
+      const contentHash = (await safeHash(content + salt)).slice(0, 16)
 
-      // Execute on-chain transaction if wallet supports it
-      const txId = await executeTransaction('create_post', [
-        `${identity.identityHash}field`,
-        `${contentHash}field`,
-        `${crypto.getRandomValues(new Uint32Array(1))[0]}u64`,
-      ])
+      const postSalt = randomFieldValue()
+      const currentBlock = `${Math.floor(Date.now() / 1000)}u64`
+
+      let txId: string | null = null
+
+      if (walletMode === 'real' && identityRecord) {
+        // Real wallet: pass identity record + fields
+        txId = await executeTransaction('create_post', [
+          identityRecord,
+          `${contentHash}field`,
+          `${postSalt}field`,
+          currentBlock,
+        ])
+      } else {
+        // Demo mode: simulate transaction
+        txId = await executeTransaction('create_post', [
+          `${identity.identityHash}field`,
+          `${contentHash}field`,
+          `${postSalt}field`,
+          currentBlock,
+        ])
+      }
+
+      const postId = typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`
 
       const newPost: Post = {
-        id: txId || crypto.randomUUID(),
+        id: txId || postId,
         contentHash,
         content,
         createdAt: Date.now(),
@@ -300,7 +318,7 @@ function App() {
 
       setCooldownUntil(Date.now() + POST_COOLDOWN_MS)
 
-      if (txId && wallet.type !== 'demo') {
+      if (txId && walletMode === 'real') {
         showToast(`Posted on-chain. TX: ${txId.slice(0, 12)}...`)
       } else {
         showToast('Posted anonymously via ZK proof')
@@ -312,26 +330,41 @@ function App() {
     }
   }
 
-  const sendMessage = async (_receiver: string, content: string) => {
+  // ─── Send Message ──────────────────────────────────────────────────
+  const sendMessage = async (receiver: string, content: string) => {
     if (!identity) return
 
     setIsLoading(true)
     try {
-      const encoder = new TextEncoder()
-      const data = encoder.encode(content)
-      const hashBuffer = await crypto.subtle.digest('SHA-256', data)
-      const hashArray = Array.from(new Uint8Array(hashBuffer))
-      const contentHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16)
+      const contentHash = (await safeHash(content)).slice(0, 16)
+      const messageSalt = randomFieldValue()
+      const currentBlock = `${Math.floor(Date.now() / 1000)}u64`
 
-      // Execute on-chain transaction if wallet supports it
-      await executeTransaction('send_message', [
-        `${identity.identityHash}field`,
-        `${_receiver}`,
-        `${contentHash}field`,
-      ])
+      if (walletMode === 'real' && identityRecord) {
+        await executeTransaction('send_message', [
+          identityRecord,
+          receiver,
+          `${contentHash}field`,
+          `${messageSalt}field`,
+          currentBlock,
+        ])
+      } else {
+        // Demo mode simulation
+        await executeTransaction('send_message', [
+          `${identity.identityHash}field`,
+          receiver,
+          `${contentHash}field`,
+          `${messageSalt}field`,
+          currentBlock,
+        ])
+      }
+
+      const msgId = typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`
 
       const newMessage: Message = {
-        id: crypto.randomUUID(),
+        id: msgId,
         senderHash: identity.identityHash.slice(0, 8),
         contentHash,
         content,
@@ -348,30 +381,35 @@ function App() {
     }
   }
 
+  // ─── Determine if user is "connected" (real wallet or demo) ────────
+  const isConnected = identity !== null && walletMode !== null
+
   return (
     <div className="app">
-      {wallet.connected && (
+      {isConnected && (
         <Header
           identity={identity}
           currentPage={currentPage}
           onNavigate={setCurrentPage}
           onDisconnect={disconnectWallet}
           network={NETWORK}
-          walletType={wallet.type}
+          walletMode={walletMode}
+          publicKey={publicKey || undefined}
         />
       )}
 
       <main className="main-content">
-        {currentPage === 'landing' && (
+        {!isConnected && (
           <Landing
-            onConnect={openWalletModal}
+            onDemoMode={enterDemoMode}
             isLoading={isLoading}
             programId={PROGRAM_ID}
+            walletConnected={connected}
           />
         )}
 
         <Suspense fallback={<PageLoader />}>
-          {currentPage === 'feed' && (
+          {currentPage === 'feed' && isConnected && (
             <Feed
               posts={posts}
               onCreatePost={createPost}
@@ -381,7 +419,7 @@ function App() {
             />
           )}
 
-          {currentPage === 'messages' && (
+          {currentPage === 'messages' && isConnected && (
             <Messages
               messages={messages}
               onSendMessage={sendMessage}
@@ -389,27 +427,31 @@ function App() {
             />
           )}
 
-          {currentPage === 'payments' && (
+          {currentPage === 'payments' && isConnected && (
             <Payments
-              wallet={wallet}
+              walletMode={walletMode!}
               showToast={showToast}
-              aleoWallet={aleoWallet}
+              executeTransaction={executeTransaction}
+              publicKey={publicKey || undefined}
+              identityRecord={identityRecord}
               programId={PROGRAM_ID}
             />
           )}
 
-          {currentPage === 'reputation' && identity && (
+          {currentPage === 'reputation' && isConnected && identity && (
             <ReputationProofPanel
               identity={identity}
               showToast={showToast}
-              aleoWallet={aleoWallet}
+              executeTransaction={executeTransaction}
+              walletMode={walletMode!}
+              identityRecord={identityRecord}
               programId={PROGRAM_ID}
             />
           )}
         </Suspense>
       </main>
 
-      {wallet.connected && (
+      {isConnected && (
         <nav className="nav-mobile">
           <button
             className={`nav-item ${currentPage === 'feed' ? 'active' : ''}`}
@@ -438,13 +480,6 @@ function App() {
         </nav>
       )}
 
-      {showWalletModal && (
-        <WalletModal
-          onSelect={handleWalletSelect}
-          onClose={() => setShowWalletModal(false)}
-        />
-      )}
-
       {toast && (
         <div className={`toast toast-${toast.type}`}>
           {toast.message}
@@ -454,4 +489,5 @@ function App() {
   )
 }
 
+export { WalletMultiButton }
 export default App
